@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hiflow-ble"
+version = "0.1.0"
+description = "Library to communicate with Hoymiles HiFlow Pro (HMS-*-2WB) microinverters over BLE."
+requires-python = ">=3.10"
+authors = [{ name = "TheTiEr" }]
+license = "MIT"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+
+dependencies = [
+    "protobuf>=5.29.3",
+    "cryptography>=39.0.1",
+    "bleak>=0.22.0",
+]
+
+[project.scripts]
+hiflow-ble = "hiflow_ble.__main__:run_main"
+
+[project.urls]
+Homepage = "https://github.com/TheTiEr/hiflow-ble"
+Issues = "https://github.com/TheTiEr/hiflow-ble/issues"
+
+[project.readme]
+file = "README.md"
+content-type = "text/markdown"
