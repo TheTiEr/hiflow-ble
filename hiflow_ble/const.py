@@ -33,6 +33,13 @@ CMD_ACTION_MI_START = 6
 CMD_ACTION_MI_SHUTDOWN = 7
 CMD_ACTION_LIMIT_POWER = 8
 
+# CommCmd application-layer handshake commands (post-V0, V1-encrypted).
+# Sent after encRand is known; required before the device will accept data cmds.
+# S-Miles app: ClientConstants.q0 (CMD_COMM_CMD_RES_DTO) / r0 (CMD_COMM_CMD_STATUS_RES).
+CMD_COMM_CMD_RES_DTO    = b"\xa3\x18"   # 0xA318  CommCmdResDTO   (app→device)
+CMD_COMM_CMD_STATUS_RES = b"\xa3\x19"   # 0xA319  CommCmdStatusResDTO (app→device)
+# Device responds on (cmd − 0x0100): 0xA218 / 0xA219 respectively.
+
 # Commands that travel on the V0 (SN-keyed AES-128-CBC) path: only the initial
 # pairing handshake. Everything else is V1 (encRand-keyed AES-128-GCM with a
 # 16-byte trailing tag).
