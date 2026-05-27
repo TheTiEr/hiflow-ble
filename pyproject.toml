@@ -20,6 +20,11 @@ dependencies = [
     "bleak>=0.22.0",
 ]
 
+[project.optional-dependencies]
+# Install with: pip install hiflow-ble[ha]
+# Automatically available in Home Assistant environments.
+ha = ["bleak-retry-connector>=3.0.0"]
+
 [project.scripts]
 hiflow-ble = "hiflow_ble.__main__:run_main"
 

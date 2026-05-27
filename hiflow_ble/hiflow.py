@@ -309,18 +309,52 @@ class HiFlow:
 
         Idempotent on already-connected clients. Use :meth:`_ensure_connected`
         for retry-with-backoff behavior.
+
+        When ``bleak_retry_connector`` is installed (standard in Home Assistant),
+        uses :func:`bleak_retry_connector.establish_connection` for reliable
+        connection establishment (platform-specific retries, timeout tuning).
+        Falls back to plain ``BleakClient.connect()`` for standalone use.
         """
         if self.is_connected:
             return
-        # Register the disconnect callback at construction time — that's the
-        # recommended Bleak API (0.20+) and also covers the small window
-        # between connect() returning and us setting up the rest of the link.
-        client = BleakClient(self.address, disconnected_callback=self._on_disconnect)
+
+        # _connected is set by whichever path succeeds; the other paths raise.
+        _connected: BleakClient | None = None
+
+        # ── Try bleak-retry-connector first (HA / Linux path) ──────────────
+        # When installed (standard in HA), establish_connection handles platform-
+        # specific retries and proper timeout tuning — avoids the BlueZ warning.
         try:
-            await client.connect(timeout=self.timeout * 2)
+            from bleak_retry_connector import establish_connection as _ec  # type: ignore[import]
+            from bleak.backends.device import BLEDevice  # type: ignore[import]
+
+            if isinstance(self.address, BLEDevice):
+                name = self.address.name or str(self.address.address)
+                _connected = await _ec(
+                    BleakClient,
+                    self.address,
+                    name,
+                    disconnected_callback=self._on_disconnect,
+                    max_attempts=self._max_reconnect_attempts,
+                )
+        except ImportError:
+            pass  # bleak-retry-connector not installed — use plain connect below
         except Exception:
             self.set_state(NetworkState.Offline)
             raise
+
+        # ── Plain BleakClient.connect() fallback (standalone / string address) ──
+        if _connected is None:
+            _plain = BleakClient(self.address, disconnected_callback=self._on_disconnect)
+            try:
+                await _plain.connect(timeout=self.timeout * 2)
+            except Exception:
+                self.set_state(NetworkState.Offline)
+                raise
+            _connected = _plain
+
+        client: BleakClient = _connected  # always non-None here: all other paths raise
+
         # pair() is required on Windows/WinRT before CCCD writes (start_notify).
         # On Linux/BlueZ the inverter rejects BLE-level bonding (AuthenticationFailed),
         # which causes BlueZ to silently drop the connection — skip it on non-Windows.
@@ -329,10 +363,12 @@ class HiFlow:
                 await client.pair()
             except Exception as e:
                 logger.debug("pair() failed: %s", e)
+
         try:
             await client.exchange_mtu(DEFAULT_MTU)
         except Exception:
             pass
+
         try:
             await client.start_notify(RX_UUID, self._on_notify)
         except Exception:
@@ -343,6 +379,7 @@ class HiFlow:
                 pass
             self.set_state(NetworkState.Offline)
             raise
+
         self._client = client
         self.set_state(NetworkState.Online)
 
