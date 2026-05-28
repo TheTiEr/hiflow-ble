@@ -32,6 +32,13 @@ hiflow-ble = "hiflow_ble.__main__:run_main"
 Homepage = "https://github.com/TheTiEr/hiflow-ble"
 Issues = "https://github.com/TheTiEr/hiflow-ble/issues"
 
+[tool.pyright]
+venvPath = "."
+venv = "venv"
+# protobuf-generated _pb2 modules register classes dynamically via _globals;
+# Pyright cannot see them statically — suppress the false-positive attribute errors.
+reportAttributeAccessIssue = "none"
+
 [project.readme]
 file = "README.md"
 content-type = "text/markdown"

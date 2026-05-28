@@ -1,3 +1,5 @@
 {
+  "venvPath": ".",
+  "venv": "venv",
   "reportAttributeAccessIssue": "none"
 }
