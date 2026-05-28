@@ -17,6 +17,7 @@ class InverterType(Enum):
 
     ONE = "1T"
     TWO = "2T"
+    TWO_WT = "2WT"
     FOUR = "4T"
     SIX = "6T"
 
@@ -51,6 +52,7 @@ class InverterPower(Enum):
 
 
 power_mapping = {
+    0x1610: InverterPower.P_600_700_800,   # HMS-800-2WB (HiFlow Pro)
     0x1011: InverterPower.P_100,
     0x1020: InverterPower.P_250,
     0x1021: InverterPower.P_300_350_400,
@@ -216,6 +218,9 @@ def get_inverter_type(serial_bytes: bytes) -> InverterType:
             inverter_type = InverterType.ONE
         if serial_bytes[1] in [0x10, 0x12]:
             inverter_type = InverterType.TWO
+    elif serial_bytes[0] == 0x16:
+        # HiFlow Pro series (HMS-*-2WB): 2-MPPT microinverter
+        inverter_type = InverterType.TWO_WT
     elif serial_bytes[0] == 0x28:
         if serial_bytes[1] in [0x21]:
             inverter_type = InverterType.TWO
@@ -246,6 +251,8 @@ def get_inverter_series(serial_bytes: bytes) -> InverterSeries:
         series = InverterSeries.HMT
     elif serial_bytes[0] == 0x14:
         series = InverterSeries.HMS
+    elif serial_bytes[0] == 0x16:
+        series = InverterSeries.HMS
     elif serial_bytes[0] == 0x28:
         series = InverterSeries.SOL_H
 
@@ -275,7 +282,7 @@ def get_inverter_model_name(serial_number: str) -> str:
         inverter_series = get_inverter_series(serial_bytes)
         inverter_power = get_inverter_power(serial_bytes)
     except Exception as e:
-        logger.error(e)
+        logger.warning("Could not determine inverter model name: %s", e)
         return "Unknown"
     return (
         inverter_series.value + "-" + inverter_power.value + "-" + inverter_type.value

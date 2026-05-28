@@ -230,6 +230,9 @@ class HiFlow:
         ble_id: str = "",
         pin: str = "",
     ):
+        # consecutive handshake failures — used to throttle log spam when the
+        # inverter is offline at night (BLE radio alive but app-layer dormant).
+        self._handshake_fail_count: int = 0
         """Initialize.
 
         Args:
@@ -271,7 +274,7 @@ class HiFlow:
         self._client: BleakClient | None = None
         self._rx_buf = bytearray()
         self._rx_event = asyncio.Event()
-        self._handshake_done: bool = False  # reset on every disconnect
+        self._handshake_done: bool = False   # reset on every disconnect
 
     # ---------- state ----------
 
@@ -298,7 +301,8 @@ class HiFlow:
         """
         logger.info("HiFlow: BLE link dropped (disconnected_callback)")
         self.set_state(NetworkState.Offline)
-        self._handshake_done = False   # must re-handshake on next connect
+        self._handshake_done = False       # must re-handshake on next connect
+        self._handshake_fail_count = 0     # reset so reconnect logs at INFO again
         # Unblock any pending notify-waiter so the request fails fast instead
         # of timing out — the request-side code checks the buffer afterwards.
         self._rx_event.set()
@@ -601,13 +605,22 @@ class HiFlow:
     # ---------- CommCmd handshake ----------
 
     async def _raw_request(
-        self, cmd_int: int, raw_payload: bytes, timeout: float | None = None
+        self,
+        cmd_int: int,
+        raw_payload: bytes,
+        timeout: float | None = None,
+        keep_alive_on_timeout: bool = False,
     ) -> bytes | None:
         """Send a V1 (encRand-keyed) raw frame; return the raw decrypted payload.
 
         Unlike :meth:`async_send_request` this skips protobuf serialisation/
         deserialisation — used by the CommCmd handshake whose message types are
         not covered by the compiled ``.proto`` files.
+
+        When *keep_alive_on_timeout* is True, a response timeout does **not**
+        trigger :meth:`_safe_disconnect`.  Use this for handshake steps where
+        the BLE link is known-good but the device application layer may be
+        slow to respond (e.g. booting after overnight solar shutdown).
 
         Returns ``None`` on any transport, encryption, or parse failure.
         """
@@ -630,7 +643,12 @@ class HiFlow:
             try:
                 await self._client.write_gatt_char(TX_UUID, frame, response=True)
                 await asyncio.wait_for(self._rx_event.wait(), timeout=t)
-            except (asyncio.TimeoutError, BleakError, Exception) as e:
+            except asyncio.TimeoutError:
+                logger.debug("_raw_request: timeout waiting for response (cmd=0x%04x)", cmd_int)
+                if not keep_alive_on_timeout:
+                    await self._safe_disconnect()
+                return None
+            except (BleakError, Exception) as e:
                 logger.debug("_raw_request transport error (cmd=0x%04x): %s", cmd_int, e)
                 await self._safe_disconnect()
                 return None
@@ -697,14 +715,30 @@ class HiFlow:
         cmd_sts = int.from_bytes(CMD_COMM_CMD_STATUS_RES, "big")  # 0xA319
 
         # ── Step 1: action=64 login ─────────────────────────────────────────
+        # Use keep_alive_on_timeout=True: when the inverter is offline at night
+        # (BLE radio alive but application processor dormant), the write succeeds
+        # but no response arrives.  Keeping the BLE connection open avoids the
+        # expensive reconnect cycle on every coordinator poll.
         logger.debug("CommCmd handshake: TX action=64 bleId=%s", used_id)
-        if await self._raw_request(cmd_res, _build_comm_cmd_res(64, used_id)) is None:
-            logger.warning("CommCmd handshake: action=64 send failed")
+        if await self._raw_request(
+            cmd_res, _build_comm_cmd_res(64, used_id), keep_alive_on_timeout=True
+        ) is None:
+            self._handshake_fail_count += 1
+            # First failure → INFO; subsequent → DEBUG (suppress log spam when
+            # the device is offline overnight and the coordinator polls every 30s).
+            log = logger.info if self._handshake_fail_count == 1 else logger.debug
+            log(
+                "CommCmd handshake: action=64 no response "
+                "(fail #%d — device may be offline or booting)",
+                self._handshake_fail_count,
+            )
             return False
 
         login_sts = -1
         for _ in range(5):
-            pt = await self._raw_request(cmd_sts, _build_comm_cmd_status_res(64))
+            pt = await self._raw_request(
+                cmd_sts, _build_comm_cmd_status_res(64), keep_alive_on_timeout=True
+            )
             if pt is None:
                 break
             _, sts = _get_action_sts(pt)
@@ -724,11 +758,15 @@ class HiFlow:
                 )
             else:
                 logger.debug("CommCmd handshake: sts=3 → TX action=82 PIN")
-                if await self._raw_request(cmd_res, _build_comm_cmd_res(82, used_pin)) is None:
+                if await self._raw_request(
+                    cmd_res, _build_comm_cmd_res(82, used_pin), keep_alive_on_timeout=True
+                ) is None:
                     logger.warning("CommCmd handshake: action=82 send failed")
                     return False
                 for _ in range(8):
-                    pt = await self._raw_request(cmd_sts, _build_comm_cmd_status_res(82))
+                    pt = await self._raw_request(
+                        cmd_sts, _build_comm_cmd_status_res(82), keep_alive_on_timeout=True
+                    )
                     if pt is None:
                         break
                     _, sts = _get_action_sts(pt)
@@ -758,15 +796,20 @@ class HiFlow:
         ts = int(time.time())
         time_data = f"{ts},{tz_offset}\r"
         logger.debug("CommCmd handshake: TX action=104 time-sync")
-        if await self._raw_request(cmd_res, _build_comm_cmd_res(104, time_data)) is None:
+        if await self._raw_request(
+            cmd_res, _build_comm_cmd_res(104, time_data), keep_alive_on_timeout=True
+        ) is None:
             logger.warning("CommCmd handshake: action=104 send failed")
             return False
-        pt = await self._raw_request(cmd_sts, _build_comm_cmd_status_res(104))
+        pt = await self._raw_request(
+            cmd_sts, _build_comm_cmd_status_res(104), keep_alive_on_timeout=True
+        )
         if pt is not None:
             _, sts = _get_action_sts(pt)
             logger.debug("CommCmd time-sync sts=%d", sts)
 
         self._handshake_done = True
+        self._handshake_fail_count = 0   # reset on success
         logger.info("CommCmd handshake complete (bleId=%s, login_sts=%d)", used_id, login_sts)
         return True
 
