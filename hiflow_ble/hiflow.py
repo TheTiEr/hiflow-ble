@@ -485,25 +485,31 @@ class HiFlow:
         cmd_int = _bcmd_to_int(command)
         is_v0 = cmd_int in V0_CMDS
 
+        sn: str = ""
+        enc_rand: bytes = b""
         if is_v0:
             if not self.sn:
                 logger.error("SN required for V0 (pairing) requests")
                 return None
-        elif not self.enc_rand:
-            logger.error("encRand required for V1 requests — call async_extract_enc_rand first")
-            return None
+            sn = self.sn
+        else:
+            if not self.enc_rand:
+                logger.error("encRand required for V1 requests — call async_extract_enc_rand first")
+                return None
+            enc_rand = self.enc_rand
 
         async with self._mutex:
             tid = self._tid
             self._tid = (self._tid + 1) & 0x7FFF
             payload = request.SerializeToString()
             if is_v0:
-                frame = build_frame_v0(self.sn, cmd_int, tid, payload)
+                frame = build_frame_v0(sn, cmd_int, tid, payload)
             else:
-                frame = build_frame(self.enc_rand, cmd_int, tid, payload)
+                frame = build_frame(enc_rand, cmd_int, tid, payload)
 
             self._rx_buf.clear()
             self._rx_event.clear()
+            assert self._client is not None
             try:
                 await self._client.write_gatt_char(TX_UUID, frame, response=True)
                 await asyncio.wait_for(self._rx_event.wait(), timeout=self.timeout)
@@ -534,9 +540,9 @@ class HiFlow:
         # the caller can run V0 re-pairing. Other errors (CRC mismatch, PKCS7
         # unpad failure) bubble up unchanged.
         if is_v0:
-            _cmd, _tid, pt = parse_frame_v0(self.sn, buf)
+            _cmd, _tid, pt = parse_frame_v0(sn, buf)
         else:
-            _cmd, _tid, pt = parse_frame(self.enc_rand, buf)
+            _cmd, _tid, pt = parse_frame(enc_rand, buf)
 
         try:
             parsed = response_type.FromString(pt)
@@ -565,6 +571,7 @@ class HiFlow:
         """
         if not self.sn:
             raise RuntimeError("SN required — set self.sn from the BLE name first")
+        sn = self.sn
         await self._ensure_connected()
 
         request = APPInfomationData_pb2.APPInfoDataResDTO()
@@ -577,11 +584,12 @@ class HiFlow:
             tid = self._tid
             self._tid = (self._tid + 1) & 0x7FFF
             frame = build_frame_v0(
-                self.sn, _bcmd_to_int(CMD_APP_INFO_DATA_RES_DTO), tid,
+                sn, _bcmd_to_int(CMD_APP_INFO_DATA_RES_DTO), tid,
                 request.SerializeToString(),
             )
             self._rx_buf.clear()
             self._rx_event.clear()
+            assert self._client is not None
             try:
                 await self._client.write_gatt_char(TX_UUID, frame, response=True)
                 await asyncio.wait_for(self._rx_event.wait(), timeout=self.timeout)
@@ -593,7 +601,7 @@ class HiFlow:
         if len(buf) < 10 or buf[:2] != b"HM":
             await self._safe_disconnect()
             raise BleLinkError("V0 pairing: no/short response (link dropped?)")
-        _cmd, _tid, pt = parse_frame_v0(self.sn, buf)
+        _cmd, _tid, pt = parse_frame_v0(sn, buf)
         self.enc_rand = _extract_enc_rand_from_appinfo(pt)
         logger.info("Extracted encRand: %s", self.enc_rand.hex())
         return self.enc_rand
@@ -614,6 +622,7 @@ class HiFlow:
         if not self.enc_rand:
             logger.error("_raw_request: encRand not set — call async_extract_enc_rand first")
             return None
+        enc_rand = self.enc_rand
         try:
             await self._ensure_connected()
         except BleLinkError as e:
@@ -624,9 +633,10 @@ class HiFlow:
         async with self._mutex:
             tid = self._tid
             self._tid = (self._tid + 1) & 0x7FFF
-            frame = build_frame(self.enc_rand, cmd_int, tid, raw_payload)
+            frame = build_frame(enc_rand, cmd_int, tid, raw_payload)
             self._rx_buf.clear()
             self._rx_event.clear()
+            assert self._client is not None
             try:
                 await self._client.write_gatt_char(TX_UUID, frame, response=True)
                 await asyncio.wait_for(self._rx_event.wait(), timeout=t)
@@ -641,7 +651,7 @@ class HiFlow:
             await self._safe_disconnect()
             return None
         try:
-            _cmd, _tid, pt = parse_frame(self.enc_rand, buf)
+            _cmd, _tid, pt = parse_frame(enc_rand, buf)
             return pt
         except Exception as e:
             logger.debug("_raw_request: frame parse failed: %s", e)
@@ -698,22 +708,29 @@ class HiFlow:
 
         # ── Step 1: action=64 login ─────────────────────────────────────────
         logger.debug("CommCmd handshake: TX action=64 bleId=%s", used_id)
-        if await self._raw_request(cmd_res, _build_comm_cmd_res(64, used_id)) is None:
-            logger.warning("CommCmd handshake: action=64 send failed")
-            return False
-
         login_sts = -1
-        for _ in range(5):
-            pt = await self._raw_request(cmd_sts, _build_comm_cmd_status_res(64))
-            if pt is None:
+
+        if await self._raw_request(cmd_res, _build_comm_cmd_res(64, used_id)) is None:
+            # Device did not respond to the login frame (e.g. offline overnight,
+            # BLE radio alive but application processor dormant).
+            # Treat as sts=3 (PIN-needed) and fall through to action=82 so the
+            # coordinator can recover without user intervention once solar returns.
+            logger.warning(
+                "CommCmd handshake: action=64 send failed — attempting action=82 PIN pairing"
+            )
+            login_sts = 3
+        else:
+            for _ in range(5):
+                pt = await self._raw_request(cmd_sts, _build_comm_cmd_status_res(64))
+                if pt is None:
+                    break
+                _, sts = _get_action_sts(pt)
+                logger.debug("CommCmd login poll sts=%d", sts)
+                if sts == 0:        # in-progress for action=64
+                    await asyncio.sleep(1.0)
+                    continue
+                login_sts = sts
                 break
-            _, sts = _get_action_sts(pt)
-            logger.debug("CommCmd login poll sts=%d", sts)
-            if sts == 0:        # in-progress for action=64
-                await asyncio.sleep(1.0)
-                continue
-            login_sts = sts
-            break
 
         # ── Step 2b: action=82 PIN if bleId not whitelisted ─────────────────
         if login_sts == 3:
