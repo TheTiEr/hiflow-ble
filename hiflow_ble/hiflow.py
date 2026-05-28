@@ -711,14 +711,12 @@ class HiFlow:
         login_sts = -1
 
         if await self._raw_request(cmd_res, _build_comm_cmd_res(64, used_id)) is None:
-            # Device did not respond to the login frame (e.g. offline overnight,
-            # BLE radio alive but application processor dormant).
-            # Treat as sts=3 (PIN-needed) and fall through to action=82 so the
-            # coordinator can recover without user intervention once solar returns.
-            logger.warning(
-                "CommCmd handshake: action=64 send failed — attempting action=82 PIN pairing"
+            # No ACK — device dormant or encRand stale. login_sts stays -1.
+            # action=82 is only tried on an explicit sts=3 response from the device.
+            # The coordinator will trigger V0 re-pair when the handshake returns False.
+            logger.debug(
+                "CommCmd handshake: action=64 send failed (device dormant or encRand stale)"
             )
-            login_sts = 3
         else:
             for _ in range(5):
                 pt = await self._raw_request(cmd_sts, _build_comm_cmd_status_res(64))
