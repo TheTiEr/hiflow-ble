@@ -302,7 +302,24 @@ class HiFlow:
         # Unblock any pending notify-waiter so the request fails fast instead
         # of timing out — the request-side code checks the buffer afterwards.
         self._rx_event.set()
+        client = self._client
         self._client = None
+        # Release the BlueZ notification subscription asynchronously.
+        # Without this, BlueZ keeps the D-Bus "Notify acquired" state alive
+        # even after the BLE link drops, causing start_notify() on the next
+        # reconnect to fail with org.bluez.Error.NotPermitted.
+        if client is not None:
+            try:
+                asyncio.get_event_loop().create_task(self._async_release_notify(client))
+            except Exception:
+                pass
+
+    async def _async_release_notify(self, client: BleakClient) -> None:
+        """Tell BlueZ to release the notification subscription after a drop."""
+        try:
+            await client.stop_notify(RX_UUID)
+        except Exception:
+            pass
 
     async def connect(self) -> None:
         """Establish the BLE link (single attempt).
