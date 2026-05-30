@@ -509,7 +509,9 @@ class HiFlow:
 
             self._rx_buf.clear()
             self._rx_event.clear()
-            assert self._client is not None
+            if self._client is None:
+                # Connection dropped while waiting to acquire the mutex.
+                return None
             try:
                 await self._client.write_gatt_char(TX_UUID, frame, response=True)
                 await asyncio.wait_for(self._rx_event.wait(), timeout=self.timeout)
@@ -589,7 +591,8 @@ class HiFlow:
             )
             self._rx_buf.clear()
             self._rx_event.clear()
-            assert self._client is not None
+            if self._client is None:
+                raise BleLinkError("BLE link dropped while waiting for mutex (V0 pairing)")
             try:
                 await self._client.write_gatt_char(TX_UUID, frame, response=True)
                 await asyncio.wait_for(self._rx_event.wait(), timeout=self.timeout)
@@ -636,7 +639,9 @@ class HiFlow:
             frame = build_frame(enc_rand, cmd_int, tid, raw_payload)
             self._rx_buf.clear()
             self._rx_event.clear()
-            assert self._client is not None
+            if self._client is None:
+                # Connection dropped while waiting to acquire the mutex.
+                return None
             try:
                 await self._client.write_gatt_char(TX_UUID, frame, response=True)
                 await asyncio.wait_for(self._rx_event.wait(), timeout=t)
