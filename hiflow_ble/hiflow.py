@@ -310,8 +310,8 @@ class HiFlow:
         # reconnect to fail with org.bluez.Error.NotPermitted.
         if client is not None:
             try:
-                asyncio.get_event_loop().create_task(self._async_release_notify(client))
-            except Exception:
+                asyncio.get_running_loop().create_task(self._async_release_notify(client))
+            except RuntimeError:
                 pass
 
     async def _async_release_notify(self, client: BleakClient) -> None:
@@ -386,6 +386,16 @@ class HiFlow:
         except Exception:
             pass
 
+        # Clear any stale BlueZ GATT notify state before subscribing.
+        # A previous connection that dropped without a proper stop_notify leaves
+        # BlueZ in "Notify acquired" state; start_notify() on the new connection
+        # then fails with org.bluez.Error.NotPermitted.  Calling stop_notify
+        # first is idempotent and clears the stale entry.
+        try:
+            await client.stop_notify(RX_UUID)
+        except Exception:
+            pass
+
         try:
             await client.start_notify(RX_UUID, self._on_notify)
         except Exception:
@@ -429,6 +439,7 @@ class HiFlow:
 
     async def _safe_disconnect(self) -> None:
         """Tear down ``self._client`` without raising. Sets state to Offline."""
+        self._handshake_done = False  # must re-handshake on next connect
         if self._client is None:
             self.set_state(NetworkState.Offline)
             return
