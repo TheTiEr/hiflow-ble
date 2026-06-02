@@ -398,8 +398,22 @@ class HiFlow:
 
         try:
             await client.start_notify(RX_UUID, self._on_notify)
-        except Exception:
+        except Exception as err:
             # Could not subscribe to notifications — link is useless without it.
+            # "NotPermitted" means another client (S-Miles app, Python script) is
+            # holding the BLE notification subscription.  Log clearly so users
+            # know what to do instead of seeing a generic connection failure.
+            err_str = str(err).lower()
+            if "notpermitted" in err_str or "not permitted" in err_str:
+                logger.warning(
+                    "HiFlow: start_notify failed — another Bluetooth client is "
+                    "already connected to %s (org.bluez.Error.NotPermitted). "
+                    "Close the S-Miles app and any other BLE client, then retry.",
+                    self.address if isinstance(self.address, str)
+                    else getattr(self.address, "address", self.address),
+                )
+            else:
+                logger.debug("HiFlow: start_notify failed: %s", err)
             try:
                 await client.disconnect()
             except Exception:
