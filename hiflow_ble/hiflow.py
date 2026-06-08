@@ -446,7 +446,18 @@ class HiFlow:
                     attempt + 1, self._max_reconnect_attempts, e,
                 )
                 if attempt < self._max_reconnect_attempts - 1:
-                    await asyncio.sleep(self._reconnect_backoff * (2 ** attempt))
+                    err_str = str(e).lower()
+                    if "inprogress" in err_str or "in progress" in err_str:
+                        # BlueZ has a pending HCI LE_Create_Connection command.
+                        # Its internal cleanup takes ~20-30 s; the normal 2-4 s
+                        # backoff is too short and keeps re-triggering InProgress.
+                        logger.debug(
+                            "HiFlow: BlueZ stuck in InProgress — "
+                            "waiting 30 s for HCI cleanup before retry"
+                        )
+                        await asyncio.sleep(30.0)
+                    else:
+                        await asyncio.sleep(self._reconnect_backoff * (2 ** attempt))
         raise BleLinkError(
             f"could not establish BLE link after {self._max_reconnect_attempts} attempts: {last_err}"
         )
