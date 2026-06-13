@@ -16,13 +16,14 @@ consume from a Home Assistant integration or any other async Python project.
 Designed for the **Hoymiles HMS-\*-WB** microinverters, which advertise over
 BLE as `RMI-XXXXXXXXXXXX`.
 
-| Model | BLE name prefix | Serial prefix |
-|---|---|---|
-| HMS-800-2WB (HiFlow Pro 800) | `RMI-` | `0x1610` |
-| HMS-1600-4WB (HiFlow Pro 1600) | `RMI-` | `0x1164` |
+| Model | BLE name prefix | Serial prefix | Notes |
+|---|---|---|---|
+| HF-800-WB | `RMI-` | unknown | 1 physical MPPT; reports as 2 mirrored PV ports. Confirmed by [issue #2](https://github.com/TheTiEr/hiflow-ble/issues/2). |
+| HMS-800-2WB (HiFlow Pro 800) | `RMI-` | `0x1610` | 2 MPPT inputs |
+| HMS-1600-4WB (HiFlow Pro 1600) | `RMI-` | `0x1164` | 4 MPPT inputs |
 
-Other HMS-WB models likely work. Open an issue with your model and the first
-four hex characters of the inverter serial if yours is not listed.
+Other HMS-WB / HF-WB models likely work. Open an issue with your model and the
+first four hex characters of the inverter serial number if yours is not listed.
 
 ---
 
@@ -191,8 +192,10 @@ All numeric values use fixed-point encoding; scaling factors vary by field
 (e.g. `active_power × 0.1` → Watt, `voltage × 0.1` → Volt,
 `current × 0.01` → Ampere).
 
-`error_code = 0` means normal. `0x03000000` (50331648) means no DC input
-(night or panels disconnected) — not a hardware fault.
+`error_code = 0` means normal. `0x03000000` (50331648) is a known status code
+that appears on some models (e.g. HF-800-WB) even during active production —
+it is not a hardware fault. The exact meaning is device-firmware-specific and
+not publicly documented by Hoymiles.
 
 ---
 
