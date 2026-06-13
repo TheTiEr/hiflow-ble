@@ -2,9 +2,9 @@
 
 Usage::
 
-    hiflow-ble <MAC|RMI-XXX> --auto-pair get-real-data-new --as-json
+    hiflow-ble <MAC|RMI-XXX> --auto-pair [--pin 1234] get-real-data-new --as-json
     hiflow-ble <MAC|RMI-XXX> --enc-rand <hex32> get-real-data-new
-    hiflow-ble <MAC|RMI-XXX> --extract <SN_12chars>
+    hiflow-ble <MAC|RMI-XXX> --extract <SN_12chars> [--pin 1234]
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from typing import Any
 from bleak import BleakScanner
 from google.protobuf.json_format import MessageToJson
 
-from .hiflow import HiFlow
+from .hiflow import HiFlow, generate_ble_id
 
 COMMANDS = [
     "get-real-data",
@@ -73,9 +73,12 @@ async def _main_async() -> None:
     src = parser.add_mutually_exclusive_group(required=True)
     src.add_argument("--enc-rand", help="hex encRand (32 hex chars)")
     src.add_argument("--auto-pair", action="store_true",
-                     help="extract encRand via V0 handshake first")
+                     help="extract encRand via V0 handshake first, then run command")
     src.add_argument("--extract", metavar="SN",
                      help="run V0 pairing only and print encRand, then exit")
+    parser.add_argument("--pin", default="",
+                        help="BLE PIN set in the S-Miles app (required on first pairing "
+                             "when the bleId is not yet whitelisted on the device)")
     parser.add_argument("--sn", help="12-char serial tail (overrides name-derived SN)")
     parser.add_argument("--timeout", type=int, default=10)
     parser.add_argument("--as-json", action="store_true", help="print responses as JSON")
@@ -94,22 +97,43 @@ async def _main_async() -> None:
         sn = ns.extract.upper()
 
     enc_rand = bytes.fromhex(ns.enc_rand) if ns.enc_rand else None
-    async with HiFlow(address, enc_rand=enc_rand, sn=sn, timeout=ns.timeout) as hf:
+    ble_id = generate_ble_id()
+
+    async with HiFlow(
+        address,
+        enc_rand=enc_rand,
+        sn=sn,
+        timeout=ns.timeout,
+        ble_id=ble_id,
+        pin=ns.pin,
+    ) as hf:
         if ns.auto_pair or ns.extract:
             if not sn:
                 print("Need SN: use --sn or scan by RMI-XXX name", file=sys.stderr)
                 sys.exit(1)
             er = await hf.async_extract_enc_rand()
-            print(f"encRand = {er.hex()}")
+            print(f"encRand = {er.hex()}", file=sys.stderr)
             if ns.extract:
                 return
+
+        # Run CommCmd handshake before any data command — required after every connect.
+        if ns.command or ns.auto_pair:
+            ok = await hf.async_do_comm_cmd_handshake(ble_id=ble_id, pin=ns.pin)
+            if not ok:
+                print(
+                    "CommCmd handshake failed. If this is the first pairing, "
+                    "pass the BLE PIN via --pin. Make sure the S-Miles app is closed.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+
         if not ns.command:
             print("No command given — pass one of:", ", ".join(COMMANDS), file=sys.stderr)
             sys.exit(1)
+
         method_name = _command_to_method(ns.command)
         method = getattr(hf, method_name)
-        # Cast remaining positional args by inspecting the method signature
-        # heuristically: power_limit → int, serials → str.
+        # Cast remaining positional args heuristically: power_limit → int, serials → str.
         call_args = list(ns.args)
         if ns.command == "set-power-limit":
             call_args = [int(call_args[0])]

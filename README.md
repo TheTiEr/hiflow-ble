@@ -288,6 +288,7 @@ hiflow-ble <target> <--enc-rand HEX | --auto-pair | --extract SN> [command] [arg
 
 | Flag | Default | Description |
 |---|---|---|
+| `--pin <PIN>` | `""` | BLE PIN set in the S-Miles app. Required on first pairing when the `bleId` is not yet whitelisted on the device. Leave empty if you never configured a PIN. |
 | `--sn <12 chars>` | from BLE name | Override the 12-char serial tail. |
 | `--timeout <int>` | `10` | Per-request BLE timeout in seconds. |
 | `--as-json` | — | Print protobuf responses as JSON. |
@@ -316,17 +317,20 @@ hiflow-ble <target> <--enc-rand HEX | --auto-pair | --extract SN> [command] [arg
 ### Examples
 
 ```bash
-# Extract encRand for the first time
-hiflow-ble RMI-XXXXXXXXXXXX --extract XXXXXXXXXXXX
+# First-time pairing: extract encRand (with BLE PIN)
+hiflow-ble RMI-XXXXXXXXXXXX --extract XXXXXXXXXXXX --pin 1234
 
-# Current measurements as JSON
+# First-time pairing + immediately fetch data (PIN required)
+hiflow-ble RMI-XXXXXXXXXXXX --auto-pair --pin 1234 get-real-data-new --as-json
+
+# Subsequent use: encRand already known, no PIN needed
 hiflow-ble AA:BB:CC:DD:EE:FF --enc-rand <hex32> get-real-data-new --as-json
 
 # Set power limit to 70 %
 hiflow-ble AA:BB:CC:DD:EE:FF --enc-rand <hex32> set-power-limit 70
 
-# Full verbose run with auto-pairing
-hiflow-ble RMI-XXXXXXXXXXXX --auto-pair get-config --as-json --verbose
+# Full verbose run with auto-pairing and PIN
+hiflow-ble RMI-XXXXXXXXXXXX --auto-pair --pin 1234 get-config --as-json --verbose
 ```
 
 ---
