@@ -268,6 +268,7 @@ class HiFlow:
         self.state: NetworkState = NetworkState.Unknown
         self._tid = 1
         self._mutex = asyncio.Lock()
+        self._connect_lock = asyncio.Lock()  # serialises concurrent _ensure_connected callers
         self._client: BleakClient | None = None
         self._rx_buf = bytearray()
         self._rx_event = asyncio.Event()
@@ -425,42 +426,50 @@ class HiFlow:
         self.set_state(NetworkState.Online)
 
     async def _ensure_connected(self) -> None:
-        """Connect with exponential backoff.
+        """Connect with exponential backoff, serialised across concurrent callers.
 
         Raises :class:`hiflow_ble.errors.BleLinkError` if every attempt fails.
-        Always tears down any stale client before retrying so we don't trust a
-        BleakClient whose ``is_connected`` flag has gone out of sync.
+
+        ``_connect_lock`` prevents two callers from launching overlapping
+        ``establish_connection()`` calls for the same address, which would cause
+        habluetooth to decrement its ``_connect_in_progress`` refcount with no
+        matching live entry and log "Removing a non-existing connecting …".
         """
         if self.is_connected:
             return
-        await self._safe_disconnect()
-        last_err: Exception | None = None
-        for attempt in range(self._max_reconnect_attempts):
-            try:
-                await self.connect()
+        async with self._connect_lock:
+            # Re-check inside the lock: a concurrent caller may have already
+            # reconnected while we were waiting.
+            if self.is_connected:
                 return
-            except Exception as e:
-                last_err = e
-                logger.debug(
-                    "HiFlow connect attempt %d/%d failed: %s",
-                    attempt + 1, self._max_reconnect_attempts, e,
-                )
-                if attempt < self._max_reconnect_attempts - 1:
-                    err_str = str(e).lower()
-                    if "inprogress" in err_str or "in progress" in err_str:
-                        # BlueZ has a pending HCI LE_Create_Connection command.
-                        # Its internal cleanup takes ~20-30 s; the normal 2-4 s
-                        # backoff is too short and keeps re-triggering InProgress.
-                        logger.debug(
-                            "HiFlow: BlueZ stuck in InProgress — "
-                            "waiting 30 s for HCI cleanup before retry"
-                        )
-                        await asyncio.sleep(30.0)
-                    else:
-                        await asyncio.sleep(self._reconnect_backoff * (2 ** attempt))
-        raise BleLinkError(
-            f"could not establish BLE link after {self._max_reconnect_attempts} attempts: {last_err}"
-        )
+            await self._safe_disconnect()
+            last_err: Exception | None = None
+            for attempt in range(self._max_reconnect_attempts):
+                try:
+                    await self.connect()
+                    return
+                except Exception as e:
+                    last_err = e
+                    logger.debug(
+                        "HiFlow connect attempt %d/%d failed: %s",
+                        attempt + 1, self._max_reconnect_attempts, e,
+                    )
+                    if attempt < self._max_reconnect_attempts - 1:
+                        err_str = str(e).lower()
+                        if "inprogress" in err_str or "in progress" in err_str:
+                            # BlueZ has a pending HCI LE_Create_Connection command.
+                            # Its internal cleanup takes ~20-30 s; the normal 2-4 s
+                            # backoff is too short and keeps re-triggering InProgress.
+                            logger.debug(
+                                "HiFlow: BlueZ stuck in InProgress — "
+                                "waiting 30 s for HCI cleanup before retry"
+                            )
+                            await asyncio.sleep(30.0)
+                        else:
+                            await asyncio.sleep(self._reconnect_backoff * (2 ** attempt))
+            raise BleLinkError(
+                f"could not establish BLE link after {self._max_reconnect_attempts} attempts: {last_err}"
+            )
 
     async def _safe_disconnect(self) -> None:
         """Tear down ``self._client`` without raising. Sets state to Offline."""
