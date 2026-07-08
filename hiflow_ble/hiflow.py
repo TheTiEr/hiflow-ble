@@ -273,6 +273,10 @@ class HiFlow:
         self._rx_buf = bytearray()
         self._rx_event = asyncio.Event()
         self._handshake_done: bool = False   # reset on every disconnect
+        # Monotonic timestamp until which reconnects are suppressed after a
+        # BlueZ NotPermitted error.  The stuck GATT notify state cannot be
+        # cleared by the client; hammering connect() just floods BlueZ logs.
+        self._not_permitted_until: float = 0.0
 
     # ---------- state ----------
 
@@ -400,18 +404,23 @@ class HiFlow:
         try:
             await client.start_notify(RX_UUID, self._on_notify)
         except Exception as err:
-            # Could not subscribe to notifications — link is useless without it.
-            # "NotPermitted" means another client (S-Miles app, Python script) is
-            # holding the BLE notification subscription.  Log clearly so users
-            # know what to do instead of seeing a generic connection failure.
             err_str = str(err).lower()
             if "notpermitted" in err_str or "not permitted" in err_str:
+                # BlueZ's internal GATT "Notifying" flag is stuck from a previous
+                # ungraceful disconnect — this is NOT caused by an external client.
+                # The stale session belongs to an old D-Bus handle; stop_notify on
+                # the new client cannot clear it.  Back off for 60 s so BlueZ has
+                # time to self-heal (ATT-level timeout), rather than hammering it.
+                _NOT_PERMITTED_COOLDOWN = 60.0
+                self._not_permitted_until = time.monotonic() + _NOT_PERMITTED_COOLDOWN
+                addr = (self.address if isinstance(self.address, str)
+                        else getattr(self.address, "address", self.address))
                 logger.warning(
-                    "HiFlow: start_notify failed — another Bluetooth client is "
-                    "already connected to %s (org.bluez.Error.NotPermitted). "
-                    "Close the S-Miles app and any other BLE client, then retry.",
-                    self.address if isinstance(self.address, str)
-                    else getattr(self.address, "address", self.address),
+                    "HiFlow: start_notify NotPermitted for %s — "
+                    "BlueZ GATT notify state stuck (stale from previous disconnect). "
+                    "Reconnects paused for %.0f s. "
+                    "If this persists: sudo systemctl restart bluetooth",
+                    addr, _NOT_PERMITTED_COOLDOWN,
                 )
             else:
                 logger.debug("HiFlow: start_notify failed: %s", err)
@@ -437,14 +446,37 @@ class HiFlow:
         """
         if self.is_connected:
             return
+        # Fast-path: if a recent NotPermitted error set a cooldown, don't even
+        # attempt a connection — BlueZ cannot recover until the stuck GATT notify
+        # state times out or the service is restarted.
+        remaining = self._not_permitted_until - time.monotonic()
+        if remaining > 0:
+            raise BleLinkError(
+                f"NotPermitted cooldown active ({remaining:.0f}s remaining) — "
+                "run: sudo systemctl restart bluetooth"
+            )
         async with self._connect_lock:
             # Re-check inside the lock: a concurrent caller may have already
             # reconnected while we were waiting.
             if self.is_connected:
                 return
+            remaining = self._not_permitted_until - time.monotonic()
+            if remaining > 0:
+                raise BleLinkError(
+                    f"NotPermitted cooldown active ({remaining:.0f}s remaining) — "
+                    "run: sudo systemctl restart bluetooth"
+                )
             await self._safe_disconnect()
             last_err: Exception | None = None
             for attempt in range(self._max_reconnect_attempts):
+                # Re-check after each attempt: connect() may have just set the
+                # cooldown on NotPermitted — no point retrying immediately.
+                remaining = self._not_permitted_until - time.monotonic()
+                if remaining > 0:
+                    raise BleLinkError(
+                        f"NotPermitted cooldown active ({remaining:.0f}s remaining) — "
+                        "run: sudo systemctl restart bluetooth"
+                    )
                 try:
                     await self.connect()
                     return
