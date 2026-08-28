@@ -88,7 +88,7 @@ async with HiFlow(
 
 ## API reference
 
-### `HiFlow(address, *, enc_rand, sn, timeout, max_reconnect_attempts, reconnect_backoff, ble_id, pin)`
+### `HiFlow(address, *, enc_rand, sn, timeout, max_reconnect_attempts, reconnect_backoff, ble_id, pin, tz_offset)`
 
 Persistent BLE client for a single HiFlow Pro inverter.
 
@@ -102,6 +102,7 @@ Persistent BLE client for a single HiFlow Pro inverter.
 | `reconnect_backoff` | `float` | `2.0` | Base seconds between retries; doubles each attempt (exponential backoff). |
 | `ble_id` | `str` | `""` | The BLE identity string used in the CommCmd handshake. Generate once with `generate_ble_id()` and persist. If empty, one is generated automatically on first use. |
 | `pin` | `str` | `""` | BLE PIN set in the S-Miles app. Required on first pairing when `bleId` is not yet whitelisted. Stored so the handshake can reuse it on reconnects if needed. |
+| `tz_offset` | `int \| None` | `None` | Fixed UTC offset in seconds for the protobuf time fields. `None` derives it from the host's local timezone on every request, so it stays correct across DST transitions. Pass a value when the inverter should follow a timezone other than the host's. |
 
 Use as an async context manager (`async with HiFlow(...) as hf`) or call
 `connect()` / `disconnect()` explicitly.
@@ -144,7 +145,7 @@ it and pass it to the constructor on subsequent connects.
 
 Requires `sn` to be set. Raises `BleLinkError` on transport failure.
 
-#### `await hf.async_do_comm_cmd_handshake(ble_id="", pin="", tz_offset=3600)` → `bool`
+#### `await hf.async_do_comm_cmd_handshake(ble_id="", pin="", tz_offset=None)` → `bool`
 
 Run the **CommCmd application-layer handshake**. Must be called after every
 connect (and after `async_extract_enc_rand`) before the device will respond to
@@ -156,7 +157,7 @@ Sequence:
 |---|---|---|
 | 1 | 64 | Login with `bleId`. sts=1 → already whitelisted (skip to 3). sts=3 → unknown bleId (step 2). |
 | 2 | 82 | Submit BLE PIN. sts=0 → PIN correct, bleId whitelisted. sts=1 → wrong PIN. |
-| 3 | 104 | Time-sync: sends `unix_timestamp,tz_offset_sec`. |
+| 3 | 104 | Time-sync: sends `unix_timestamp,tz_offset_sec`. `tz_offset=None` uses `hf.tz_offset` (the host's local offset unless one was pinned on the constructor). |
 
 Returns `True` on success, `False` on failure. Sets `hf._handshake_done = True`
 and saves the whitelisted `bleId` to `hf.ble_id` on success.
