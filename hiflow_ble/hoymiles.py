@@ -19,6 +19,7 @@ class InverterType(Enum):
     TWO = "2T"
     TWO_WT = "2WT"
     FOUR = "4T"
+    FOUR_WB = "4WB"
     SIX = "6T"
 
 
@@ -47,12 +48,14 @@ class InverterPower(Enum):
     P_1000_1200_1500 = "1000/1200/1500"
     P_1200_1500 = "1200/1500"
     P_1600_1800_2000 = "1600/1800/2000"
+    P_1600_2000 = "1600/2000"
     P_2000DW = "2000DW"
     P_2250 = "2250"
 
 
 power_mapping = {
     0x1610: InverterPower.P_600_700_800,   # HMS-800-2WB (HiFlow Pro)
+    0x1620: InverterPower.P_1600_2000,     # HMS-1600/2000-4WB (HiFlow Pro)
     0x1011: InverterPower.P_100,
     0x1020: InverterPower.P_250,
     0x1021: InverterPower.P_300_350_400,
@@ -219,8 +222,13 @@ def get_inverter_type(serial_bytes: bytes) -> InverterType:
         if serial_bytes[1] in [0x10, 0x12]:
             inverter_type = InverterType.TWO
     elif serial_bytes[0] == 0x16:
-        # HiFlow Pro series (HMS-*-2WB): 2-MPPT microinverter
-        inverter_type = InverterType.TWO_WT
+        # HiFlow Pro series. The second byte distinguishes the MPPT count:
+        # 0x20 is the 4-input HMS-1600/2000-4WB, every prefix seen so far
+        # otherwise is a 2-input HMS-*-2WB.
+        if serial_bytes[1] == 0x20:
+            inverter_type = InverterType.FOUR_WB
+        else:
+            inverter_type = InverterType.TWO_WT
     elif serial_bytes[0] == 0x28:
         if serial_bytes[1] in [0x21]:
             inverter_type = InverterType.TWO
