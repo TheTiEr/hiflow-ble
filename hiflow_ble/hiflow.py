@@ -1075,6 +1075,7 @@ class HiFlow:
     async def async_restart_dtu(self) -> CommandPB_pb2.CommandReqDTO | None:
         """Reboot the DTU (BLE link will drop)."""
         request = CommandPB_pb2.CommandResDTO()
+        request.time = int(time.time())
         request.action = CMD_ACTION_DTU_REBOOT
         request.package_nub = 1
         request.tid = int(time.time())
@@ -1105,6 +1106,9 @@ class HiFlow:
     ) -> CommandPB_pb2.CommandReqDTO | None:
         inverter_serial_int = convert_inverter_serial_number(inverter_serial)
         request = CommandPB_pb2.CommandResDTO()
+        # The device silently drops a command without a timestamp: no reply,
+        # no effect (turn on/off, see ha-hiflow-ble#23).
+        request.time = int(time.time())
         request.action = action
         request.package_nub = 1
         request.dev_kind = DEV_DTU
