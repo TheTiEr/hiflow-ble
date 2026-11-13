@@ -216,6 +216,18 @@ def generate_ble_id() -> str:
 
 # ---------- main class ----------
 
+def local_utc_offset_seconds(default: int = OFFSET) -> int:
+    """Return the host's current UTC offset in seconds.
+
+    Evaluated on every call, so a daylight-saving transition is picked up
+    without restarting the process. Falls back to
+    :data:`~hiflow_ble.const.OFFSET` when the platform cannot report a local
+    UTC offset.
+    """
+    offset = datetime.now().astimezone().utcoffset()
+    return int(offset.total_seconds()) if offset is not None else default
+
+
 class HiFlow:
     """Persistent BLE client for a single HiFlow Pro inverter."""
 
@@ -229,6 +241,7 @@ class HiFlow:
         reconnect_backoff: float = 2.0,
         ble_id: str = "",
         pin: str = "",
+        tz_offset: int | None = None,
     ):
         """Initialize.
 
@@ -255,6 +268,12 @@ class HiFlow:
                 bleId is not yet in the device's whitelist (i.e. first pairing).
                 Stored here so :meth:`async_do_comm_cmd_handshake` can fall back
                 to the PIN step on every reconnect if needed.
+            tz_offset: fixed UTC offset in seconds to send in protobuf time
+                fields. ``None`` (default) derives it from the host's local
+                timezone on every request, which keeps it correct across DST
+                transitions. Pass an explicit value when the inverter should
+                follow a timezone other than the host's — Home Assistant, for
+                example, passes its own configured timezone.
         """
         self.address = address
         self.enc_rand = enc_rand
@@ -264,6 +283,7 @@ class HiFlow:
         self._reconnect_backoff = reconnect_backoff
         self.ble_id: str = ble_id       # persisted across sessions; generated on first use
         self.pin: str = pin             # user's custom BLE PIN (for whitelist-add)
+        self._tz_offset = tz_offset     # None = derive from local timezone
 
         self.state: NetworkState = NetworkState.Unknown
         self._tid = 1
@@ -277,6 +297,13 @@ class HiFlow:
         # BlueZ NotPermitted error.  The stuck GATT notify state cannot be
         # cleared by the client; hammering connect() just floods BlueZ logs.
         self._not_permitted_until: float = 0.0
+
+    @property
+    def tz_offset(self) -> int:
+        """UTC offset in seconds sent to the device in protobuf time fields."""
+        if self._tz_offset is not None:
+            return self._tz_offset
+        return local_utc_offset_seconds()
 
     # ---------- state ----------
 
@@ -672,7 +699,7 @@ class HiFlow:
 
         request = APPInfomationData_pb2.APPInfoDataResDTO()
         request.time_ymd_hms = _now_pb_time()
-        request.offset = OFFSET
+        request.offset = self.tz_offset
         request.time = int(time.time())
         # Custom decode: the response contains encRand which we need before
         # the standard FromString decode is meaningful. Walk raw bytes.
@@ -760,7 +787,7 @@ class HiFlow:
         self,
         ble_id: str = "",
         pin: str = "",
-        tz_offset: int = OFFSET,
+        tz_offset: int | None = None,
     ) -> bool:
         """Run the CommCmd application-layer handshake.
 
@@ -870,7 +897,8 @@ class HiFlow:
 
         # ── Step 3+4: action=104 time-sync ──────────────────────────────────
         ts = int(time.time())
-        time_data = f"{ts},{tz_offset}\r"
+        offset = self.tz_offset if tz_offset is None else tz_offset
+        time_data = f"{ts},{offset}\r"
         logger.debug("CommCmd handshake: TX action=104 time-sync")
         if await self._raw_request(cmd_res, _build_comm_cmd_res(104, time_data)) is None:
             logger.warning("CommCmd handshake: action=104 send failed")
@@ -891,7 +919,7 @@ class HiFlow:
         request = RealData_pb2.RealDataResDTO()
         request.time_ymd_hms = _now_pb_time()
         request.time = int(time.time())
-        request.offset = OFFSET
+        request.offset = self.tz_offset
         request.error_code = 0
         return await self.async_send_request(
             CMD_REAL_DATA_RES_DTO, request, RealData_pb2.RealDataReqDTO,
@@ -902,7 +930,7 @@ class HiFlow:
         combined = RealDataNew_pb2.RealDataNewReqDTO()
         request = RealDataNew_pb2.RealDataNewResDTO()
         request.time_ymd_hms = _now_pb_time()
-        request.offset = OFFSET
+        request.offset = self.tz_offset
         request.time = int(time.time())
         request.cp = 0
         response = await self.async_send_request(
@@ -923,7 +951,7 @@ class HiFlow:
     async def async_get_config(self) -> GetConfig_pb2.GetConfigReqDTO | None:
         """Get config (power limit, grid profile, etc.)."""
         request = GetConfig_pb2.GetConfigResDTO()
-        request.offset = OFFSET
+        request.offset = self.tz_offset
         request.time = int(time.time()) - 60
         return await self.async_send_request(
             CMD_GET_CONFIG, request, GetConfig_pb2.GetConfigReqDTO,
@@ -932,7 +960,7 @@ class HiFlow:
     async def async_network_info(self) -> NetworkInfo_pb2.NetworkInfoReqDTO | None:
         """Get network info."""
         request = NetworkInfo_pb2.NetworkInfoResDTO()
-        request.offset = OFFSET
+        request.offset = self.tz_offset
         request.time = int(time.time())
         return await self.async_send_request(
             CMD_NETWORK_INFO_RES, request, NetworkInfo_pb2.NetworkInfoReqDTO,
@@ -944,7 +972,7 @@ class HiFlow:
         """Get app information data (encrypted V1 variant once paired)."""
         request = APPInfomationData_pb2.APPInfoDataResDTO()
         request.time_ymd_hms = _now_pb_time()
-        request.offset = OFFSET
+        request.offset = self.tz_offset
         request.time = int(time.time())
         # NOTE: the V1-encrypted variant uses a different command code from the
         # V0 pairing handshake. The wifi library uses CMD_APP_INFO_DATA_RES_DTO
@@ -963,7 +991,7 @@ class HiFlow:
         combined = AppGetHistPower_pb2.AppGetHistPowerReqDTO()
         request = AppGetHistPower_pb2.AppGetHistPowerResDTO()
         request.cp = 0
-        request.offset = OFFSET
+        request.offset = self.tz_offset
         request.requested_time = int(time.time())
         request.requested_day = 0
         response = await self.async_send_request(
@@ -992,7 +1020,7 @@ class HiFlow:
     ) -> AppGetHistED_pb2.AppGetHistEDReqDTO | None:
         """Get historical energy daily."""
         request = AppGetHistED_pb2.AppGetHistEDResDTO()
-        request.offset = OFFSET
+        request.offset = self.tz_offset
         request.time = int(time.time())
         return await self.async_send_request(
             CMD_APP_GET_HIST_ED_RES, request, AppGetHistED_pb2.AppGetHistEDReqDTO,
@@ -1014,7 +1042,7 @@ class HiFlow:
         """Send a heartbeat (helps keep the BLE link warm)."""
         request = APPHeartbeatPB_pb2.HBResDTO()
         request.time_ymd_hms = _now_pb_time()
-        request.offset = OFFSET
+        request.offset = self.tz_offset
         request.time = int(time.time())
         return await self.async_send_request(
             CMD_HB_RES_DTO, request, APPHeartbeatPB_pb2.HBReqDTO,
@@ -1063,7 +1091,7 @@ class HiFlow:
                 except Exception:
                     pass
         request.time = int(time.time())
-        request.offset = OFFSET
+        request.offset = self.tz_offset
         request.app_page = 1
         request.netmode_select = 1  # WIFI
         request.wifi_ssid = ssid.encode("utf-8")

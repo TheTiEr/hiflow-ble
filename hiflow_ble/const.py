@@ -53,9 +53,11 @@ V0_CMDS = {
 # 16-byte salt mixed with the device serial for V0 key derivation.
 SALT_V0 = b"Hoymiles@#123456"
 
-# Time offset (seconds) used in protobuf time fields. CET/CEST = 3600/7200.
-# hoymiles-wifi hard-codes 28800 (CST); we default to CET because the primary
-# target audience is Europe-based HiFlow Pro owners.
+# Fallback time offset (seconds) for protobuf time fields, used only when the
+# host's local UTC offset cannot be determined. CET = 3600.
+# HiFlow normally derives the offset from the host's local timezone at call
+# time (DST-aware, see ``hiflow.local_utc_offset_seconds``) or uses the value
+# passed as ``HiFlow(tz_offset=...)``. hoymiles-wifi hard-codes 28800 (CST).
 OFFSET = 3600
 
 # Max power-limit percentage accepted by the device.
