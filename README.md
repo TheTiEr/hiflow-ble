@@ -21,6 +21,7 @@ BLE as `RMI-XXXXXXXXXXXX`.
 | HF-800-WB | `RMI-` | unknown | 1 physical MPPT; reports as 2 mirrored PV ports. Confirmed by [issue #2](https://github.com/TheTiEr/hiflow-ble/issues/2). |
 | HMS-800-2WB (HiFlow Pro 800) | `RMI-` | `0x1610` | 2 MPPT inputs |
 | HMS-1600-4WB (HiFlow Pro 1600) | `RMI-` | `0x1164` | 4 MPPT inputs |
+| HMS-1600/2000-4WB (HiFlow Pro) | `RMI-4162…` | `0x1620` | 4 MPPT inputs. Rated power is *not* encoded in the serial prefix — the 1600 W and 2000 W variants share `0x1620`. |
 
 Other HMS-WB / HF-WB models likely work. Open an issue with your model and the
 first four hex characters of the inverter serial number if yours is not listed.
